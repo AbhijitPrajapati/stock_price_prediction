@@ -6,8 +6,14 @@ from keras.layers import Dense, LSTM
 import tensorflow as tf
 import math
 from sklearn.preprocessing import MinMaxScaler
+import os
 
-stock_data = pd.read_csv('MSFT.csv')
+for file in os.scandir():
+    if file.name[len(file.name) - 4 :] == '.csv':
+        file_path = file.name
+        break
+
+stock_data = pd.read_csv(file_path)
 
 close_values = stock_data.filter(['Close']).values
 
@@ -37,5 +43,5 @@ model.fit(x_train, y_train, batch_size=1, epochs=5)
 prediction_input = close_values[len(close_values) - 90 : len(close_values)]
 prediction = model.predict(prediction_input)
 prediction = scaler.inverse_transform(prediction)
-prediction = prediction.reshape((90))
+prediction = prediction.reshape((90, 1))
 print(prediction)
