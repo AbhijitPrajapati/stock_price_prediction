@@ -6,7 +6,7 @@ from autograd import grad
 # function: data handler
 
 class Neuron:
-    def __init__(self, num_weights):
+    def __init__(self, num_weights, activation):
         # initialize weights from normal distribution (H.E. intiailization)
         mean = 0
         variance = 2 / num_weights
@@ -14,71 +14,70 @@ class Neuron:
         self.weights = np.random.normal(mean, math.sqrt(variance), num_weights)
         # initialize bias as 0
         self.bias = 0
+
+        self.activation = activation
+        self.activation_derivative = None
+
+        self.grad = 0
     
     def __call__(self, inputs):
        self.inputs = inputs
        weighted_sum = sum(w * x for w, x in zip(self.weights, inputs)) + self.bias
-       return weighted_sum
+       self.activation_derivative = grad(self.activation)(weighted_sum)
+       return self.activation(weighted_sum)
     
-    
-    def backward(self):
-        gradients = []
-        h = 0.001
-        for i, w in enumerate(self.weights):
-            ws = self.weights[:]
-            ws[i] += h
-            weight_sum = sum(w * x for w, x in zip(ws, self.inputs)) + self.bias
-            pr_weighted_sum = sum(w * x for w, x in zip(self.weights, self.inputs)) + self.bias
-            gradients.append((weight_sum - pr_weighted_sum) / h)
-        
-        # one dimensional array - the gradients of each weight
-        return gradients
         
     
 
 class Layer:
     def __init__(self, activation, num_neurons, num_previous_neurons):
-        self.neurons = [Neuron(num_previous_neurons) for i in range(num_neurons)]
-        self.activation = activation
-        self.activation_derivative = grad(activation)
-        self.outputs = []
-        self.pre_activation = []
+        
+        self.neurons = [Neuron(num_previous_neurons, activation) for _ in range(num_neurons)]
+        
+        # data needed for backpropagation
+        self.inputs = None
+        self.outputs = None
     
     def __call__(self, inputs):
-        weighted_sums = [n(inputs) for n in self.neurons]
-        self.pre_activation = weighted_sums
-        out = [self.activation(s) for s in weighted_sums]
-        self.outputs = out
-        return out
-    
+        self.inputs = inputs
+        activations = [n(inputs) for n in self.neurons]
+        self.outputs = activations
+        return activations
 
+
+
+    # prev_layer is the previous layer in the sequence of the NN, not the previous layer that was backpropagated through
     def backward(self):
-        # gradient of the layers output with respect to the output before the activation function
-        output_preactivation_g = self.activation_derivative(self.pre_activation)[0]
-        
-        
-        # gradient of the weighted sum with respect to each of the weights
-        # two dimensional array - the gradients of each weight of each neuron in the layer
-        weight_sum_weight_g = [n.backward() for n in self.neurons]
+        # figure out how the outputs of the prev_layers neurons affect the outputs of this layers neurons
+        current_neuron_grads = np.array([n.grad for n in self.neurons])
+        weights_matrix = np.array([n.weights for n in self.neurons])
+        activation_pre_activation_g = np.array([n.activation_derivative for n in self.neurons])
 
-        o = [[output_preactivation_g * w for w in nw] for nw in weight_sum_weight_g]
-        return o
+
+        p_layer_grads = np.dot(current_neuron_grads * activation_pre_activation_g, weights_matrix)
+
+        return p_layer_grads
 
 # class: Optimizer ??
 
 class MultilayerPerceptron:
     # layer sizes: sizes of the non-input layers
     # activations: activation fucntions for non-input layers
-    def __init__(self, layer_sizes, num_inputs, activations, loss_function):
+    def __init__(self, num_inputs, loss_function):
         # non-input layers
         self.layers = []
-        self.outputs = []
         self.loss_function = loss_function
         self.loss_derivative = grad(loss_function)
-        for i, num_neurons in enumerate(layer_sizes):
-            # make previous layer size the number of inputs if this is the first hidden layer
-            previous_layer_size = num_inputs if i == 0 else len(self.layers[-1].neurons)
-            self.layers.append(Layer(activations[i], num_neurons, previous_layer_size))
+        # for i, num_neurons in enumerate(layer_sizes):
+        #     # make previous layer size the number of inputs if this is the first hidden layer
+        #     previous_layer_size = num_inputs if i == 0 else len(self.layers[-1].neurons)
+        #     self.layers.append(Layer(activations[i], num_neurons, previous_layer_size))
+        
+        self.num_inputs = num_inputs
+
+    def add_layer(self, activation, num_neurons):
+        previous_layer_size = self.num_inputs if len(self.layers) == 0 else len(self.layers[-1].neurons)
+        self.layers.append(Layer(activation, num_neurons, previous_layer_size))
 
     def __call__(self, inputs):
         # manually perfmorm forward pass for input layer
@@ -92,23 +91,26 @@ class MultilayerPerceptron:
             next_inputs = l(next_inputs)
 
         # after the loop, next inputs will be the outputs of the output layer
-        self.outputs = next_inputs
         return next_inputs
 
 
-    def backward(self, actual_outputs):
-        loss = self.loss_function(self.outputs, actual_outputs)
+    def backward(self, outputs, actual_outputs):
+        loss = self.loss_function(outputs, actual_outputs)
 
-        # gradient of the loss function with respect to the outputs
-        loss_output_g = self.loss_derivative(self.outputs, actual_outputs)[0]
-        layer_grads = self.layers[-1].backward()
-        o = []
-        for i in layer_grads:
-            t = []
-            for j in i:
-                t.append(j * loss_output_g)
-            o.append(t)
-        print(o)
+        # backprpop to output layer manually
+        output_neuron_grads = self.loss_derivative(outputs, actual_outputs)
+        for i in range(len(self.layers[-1].neurons)):
+            self.layers[-1].neurons[i].grad = output_neuron_grads[i]
+
+        # loop through layers backwards
+        layer_ind = len(self.layers) - 1
+        # stopping loop at 2nd layer (1st hidden layer) because input layer doesn't have weights and biases to optimize
+        while layer_ind > 0:
+            
+            neuron_grads = self.layers[layer_ind].backward()
+
+            layer_ind -= 1
+            
 
 
 
@@ -139,7 +141,11 @@ def mean_squared_error_loss(inputs, actuals):
         mse += (input - actual) ** 2
     return mse
 
-mlp = MultilayerPerceptron(layer_sizes=[4, 5, 1], num_inputs=1, activations=[linear_activation for i in range(3)], loss_function=mean_squared_error_loss)
-mlp([1])
-mlp.backward([-1])
+mlp = MultilayerPerceptron(num_inputs=1, loss_function=mean_squared_error_loss)
+mlp.add_layer(activation=linear_activation, num_neurons=4)
+mlp.add_layer(activation=linear_activation, num_neurons=5)
+mlp.add_layer(activation=linear_activation, num_neurons=1)
+
+pred = mlp([1])
+mlp.backward(pred, [-2])
 # mlp.train(dataset['X'], dataset['Y'])
