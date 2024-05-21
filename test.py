@@ -1,8 +1,11 @@
 import numpy as np
+import math
 
-l = np.array([[[1, 2], [3, 4], [5, 6]], 
-              [[7, 8], [9, 10], [11, 12]]])
+l = np.array([1, 2, 4])
 
-a = np.array([[1, 2, 3], [4, 5, 6]])
+e = np.array([3, 4, 2])
 
-print(a[:, :1])
+# print(np.random.normal(0, 0.1, (5)))
+
+low = -math.sqrt( 6 / (3 + 3))
+print(-low)
