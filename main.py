@@ -1,15 +1,18 @@
 import autograd.numpy as np
 import numpy.typing as npt
+import typing
+import pandas as pd
 import math
 from autograd import elementwise_grad, grad
 
-class Layer:
+class LSTM_Layer:
 
-    # input_shape: the shape of the inputs -> (num_timeframes, num features)
-    def __init__(self, num_units: int, input_shape: tuple[int]) -> None:
+    def __init__(self, num_units: int, num_timeframes: int, num_features: int, batch_size: int, loss: typing.Callable) -> None:
         self.num_units = num_units
-        self.num_features = input_shape[1]
-        self.num_frames = input_shape[0]
+        self.num_features = num_features
+        self.num_frames = num_timeframes
+        self.batch_size = batch_size
+        self.loss = loss
 
         # intializes weights using orthogonal initialization
         # (glorot/xavier uniform initialization for now)
@@ -19,51 +22,40 @@ class Layer:
         # J: number of features
         # K: number of outputs/units
         # T: number of timesteps
+        # B: batch size
 
-        # input dimentions -> (T, J)
+        # input dimentions -> (B, T, J)
 
-        # 4 input weight matrices, one for each gate
-        # input weights -> (K, T)
-        
-        self.w_f = np.random.uniform(low, high, ((num_units, self.num_features)))
-        self.w_i = np.random.uniform(low, high, ((num_units, self.num_features)))
-        self.w_c = np.random.uniform(low, high, ((num_units, self.num_features)))
-        self.w_o = np.random.uniform(low, high, ((num_units, self.num_features)))
+        self.params = [ 
+                # 4 input weight matrices, one for each gate
+                # input weights -> (K, T)
+                np.random.uniform(low, high, ((num_units, self.num_features))),
+                np.random.uniform(low, high, ((num_units, self.num_features))),
+                np.random.uniform(low, high, ((num_units, self.num_features))),
+                np.random.uniform(low, high, ((num_units, self.num_features))),
+                # 4 recurrent weight matrices, one for each gate
+                # recurrent weights -> (K, K)
+                np.random.uniform(low, high, ((num_units, num_units))),
+                np.random.uniform(low, high, ((num_units, num_units))),
+                np.random.uniform(low, high, ((num_units, num_units))),
+                np.random.uniform(low, high, ((num_units, num_units))),
+                # 4 bias matrices, one for each gate
+                # biases -> (K)
+                np.random.uniform(low, high, ((num_units))),
+                np.random.uniform(low, high, ((num_units))),
+                np.random.uniform(low, high, ((num_units))),
+                np.random.uniform(low, high, ((num_units)))
+        ]
 
-        # 4 recurrent weight matrices, one for each gate
-        # recurrent weights -> (K, K)
-        self.u_f = np.random.uniform(low, high, ((num_units, num_units)))
-        self.u_i = np.random.uniform(low, high, ((num_units, num_units)))
-        self.u_c = np.random.uniform(low, high, ((num_units, num_units)))
-        self.u_o = np.random.uniform(low, high, ((num_units, num_units)))
+        # gate outputs -> (B, K)
 
+        # cell state -> (B, K)
+        self.cell_state = np.zeros((batch_size, num_units))
 
-        # 4 bias matrices, one for each gate
-        # biases -> (K)
-        self.b_f = np.random.uniform(low, high, ((num_units)))
-        self.b_i = np.random.uniform(low, high, ((num_units)))
-        self.b_c = np.random.uniform(low, high, ((num_units)))
-        self.b_o = np.random.uniform(low, high, ((num_units)))
-
-        # gate outputs -> (K)
-
-        # cell state -> (K)
-        self.cell_state = np.zeros((num_units))
-
-        # hidden state -> (K)
-        self.hidden_state = np.zeros((num_units))
+        # hidden state -> (B, K)
+        self.hidden_state = np.zeros((batch_size, num_units))
 
         # intermediate values needed for backpropagation
-        # storing the following in order:
-        # 1. previous cell state
-        # 2. previous hidden state
-        # 3. forget gate activation
-        # 4. input gate activation
-        # 5. cell gate activation
-        # 6. output gate activation
-        # 7. new cell state
-        # 8. new hidden state
-        # 9. input
         self.caches = []
     
         
@@ -75,81 +67,76 @@ class Layer:
     @staticmethod
     def tanh(input: npt.NDArray) -> npt.NDArray:
         return np.array([  (np.exp(x) - np.exp(-x)) / (np.exp(x) + np.exp(-x))  for x in input])
-       
+    
 
-    # inputs shape: (num timeframes, num features)
-    # output shape: (num timeframes, num units)
+    # inputs shape: (batch_size, num timeframes, num features)
+    # output shape: (batch_size, num timeframes, num units)
     def __call__(self, inputs: npt.NDArray) -> npt.NDArray:
-        if inputs.shape != (self.num_frames, self.num_features):
-            raise Exception('Incorrect input shape') 
+        # reset state and cache
+        self.hidden_state = np.zeros((self.batch_size, self.num_units))
+        self.cell_state = np.zeros((self.batch_size, self.num_units))
+        self.caches = []
 
-        outputs = []
+        if inputs.shape != (self.batch_size, self.num_frames, self.num_features):
+            raise Exception(f'Incorrect input shape: {inputs.shape} should be {(self.batch_size, self.num_frames, self.num_features)}') 
 
-        for timestep in inputs:
+
+        # iterating throught the timesteps
+        for t in range(inputs.shape[1]):
+            # cache value
             c = [self.cell_state, self.hidden_state]
 
+            # the input
+            timestep = inputs[:, t, :]
+
+            w_f, w_i, w_c, w_o, u_f, u_i, u_c, u_o, b_f, b_i, b_c, b_o = self.params
+
             # forget gate for remembering only a certain part of the cell state
-            f_preactivation = np.dot(self.w_f, timestep) + np.dot(self.u_f, self.hidden_state) + self.b_f
+            f_preactivation = np.dot(timestep, w_f.T) + np.dot(self.hidden_state, u_f.T) + b_f
             forget = self.sigmoid(f_preactivation)
 
             # input gate for determining what percent of the potential cell state to add to the cell state
-            i_preactivation = np.dot(self.w_i, timestep) + np.dot(self.u_i, self.hidden_state) + self.b_i
+            i_preactivation = np.dot(timestep, w_i.T) + np.dot(self.hidden_state, u_i.T) + b_i
             input = self.sigmoid(i_preactivation)
 
             # cell gate for determining the potential cell state value
-            c_preactivation = np.dot(self.w_c, timestep) + np.dot(self.u_c, self.hidden_state) + self.b_c
+            c_preactivation = np.dot(timestep, w_c.T) + np.dot(self.hidden_state, u_c.T) + b_c
             cell = self.tanh(c_preactivation)
 
             # output gate for getting the new hidden state from the new cell state
-            o_preactivation = np.dot(self.w_o, timestep) + np.dot(self.u_o, self.hidden_state) + self.b_o
+            o_preactivation = np.dot(timestep, w_o.T) + np.dot(self.hidden_state, u_o.T) + b_o
             output = self.sigmoid(o_preactivation)
 
-            # shapes ^ : (num units)
+            # shapes ^ : (batch size, num units)
 
             # update cell state and hidden state
             self.cell_state = forget * self.cell_state + input * cell
             self.hidden_state = self.tanh(self.cell_state) * output
 
             # store intermediate values needed for backward pass
-            c.extend([forget, input, cell, output, self.cell_state, self.hidden_state, inputs, f_preactivation, i_preactivation, c_preactivation, o_preactivation])
+            c.extend([input, cell, output, self.cell_state, inputs, f_preactivation, i_preactivation, c_preactivation, o_preactivation])
             self.caches.append(c)
 
-            outputs.append(self.hidden_state)
-
         
-        return np.array(outputs)
+        return self.hidden_state
     
     
-    # pred/actual shape: (num timesteps, num units)
+    # pred/actual shape: (batch size, num units)
     # returns tuple of gradients 
     def backward(self, pred: npt.NDArray, actual: npt.NDArray) -> tuple:
-        loss_func = lambda p, a: ((p - a) ** 2).mean(0)[0]
-        # loss = loss_func(pred, actual)
         # find the gradient of the loss function w.r.t its input (the hidden states)
-        dl_dh = grad(loss_func)(pred, actual)
+        dl_dh = elementwise_grad(self.loss)(pred, actual)
         
+
         tanh_derivative = elementwise_grad(self.tanh)
         sigmoid_derivative = elementwise_grad(self.sigmoid)
         
-        # initialize gradients, the gradients for all the time frames will be added up
-        w_f_grad = np.zeros((self.num_units, self.num_features))
-        w_i_grad = np.zeros((self.num_units, self.num_features))
-        w_c_grad = np.zeros((self.num_units, self.num_features))
-        w_o_grad = np.zeros((self.num_units, self.num_features))
-
-        u_f_grad = np.zeros((self.num_units, self.num_units))
-        u_i_grad =np.zeros((self.num_units, self.num_units))
-        u_c_grad =np.zeros((self.num_units, self.num_units))
-        u_o_grad = np.zeros((self.num_units, self.num_units))
-        
-        b_f_grad = np.zeros((self.num_units))
-        b_i_grad = np.zeros((self.num_units))
-        b_c_grad = np.zeros((self.num_units))
-        b_o_grad = np.zeros((self.num_units))
+        # initialize gradients, the gradients for all the time frames will be added up 
+        w_f_grad, w_i_grad, w_c_grad, w_o_grad, u_f_grad, u_i_grad, u_c_grad, u_o_grad, b_f_grad, b_i_grad, b_c_grad, b_o_grad = (np.zeros_like(p) for p in self.params)
 
         # looping through timesteps reversed
         for t in reversed(range(len(self.caches))):
-            prev_c, prev_h, f, i, c, o, new_c, new_h, inputs, f_pre, i_pre, c_pre, o_pre = self.caches[t]
+            prev_c, prev_h, i, c, o, new_c, inputs, f_pre, i_pre, c_pre, o_pre = self.caches[t]
             
             # gradient of the hidden states w.r.t the output gate activations
             dh_do = self.tanh(new_c)
@@ -168,25 +155,25 @@ class Layer:
             
 
             # gradients of the loss w.r.t the preactivations of each gate
-            # shape: (num units)
-            # [..., None] just converts the 1 dimensional vectors into arrays of shape (n, 1)
-            # it is needed for dot products later
-            forget_preactivation_grad = (dh_df * sigmoid_derivative(f_pre) * dl_dh[t])[..., None]
-            input_preactivation_grad = (dh_di * sigmoid_derivative(i_pre) * dl_dh[t])[..., None]
-            cell_preactivation_grad = (dh_dc * tanh_derivative(c_pre) * dl_dh[t])[..., None]
-            output_preactivation_grad = (dh_do * sigmoid_derivative(o_pre) * dl_dh[t])[..., None]
+            # shape: (batch size, num units)
+            forget_preactivation_grad = (dh_df * sigmoid_derivative(f_pre) * dl_dh)
+            input_preactivation_grad = (dh_di * sigmoid_derivative(i_pre) * dl_dh)
+            cell_preactivation_grad = (dh_dc * tanh_derivative(c_pre) * dl_dh)
+            output_preactivation_grad = (dh_do * sigmoid_derivative(o_pre) * dl_dh)
 
-            # input at current timeframe shape: (num features)
-            # previous hidden state shape: (num units)
-            w_f_grad = w_f_grad + np.dot(forget_preactivation_grad, inputs[t])
-            w_i_grad = w_i_grad + np.dot(input_preactivation_grad, inputs[t])
-            w_c_grad = w_c_grad + np.dot(cell_preactivation_grad, inputs[t])
-            w_o_grad = w_o_grad + np.dot(output_preactivation_grad, inputs[t])
+            # input at current timeframe shape: (batch size, num features)
+            # previous hidden state shape: (batch size, num units)
+            current_input = inputs[:, t, :]
 
-            u_f_grad = u_f_grad + np.dot(forget_preactivation_grad, prev_h[None, ...])
-            u_i_grad = u_i_grad + np.dot(input_preactivation_grad, prev_h[None, ...])
-            u_c_grad = u_c_grad + np.dot(cell_preactivation_grad, prev_h[None, ...])
-            u_o_grad = u_o_grad + np.dot(output_preactivation_grad, prev_h[None, ...])
+            w_f_grad = w_f_grad + np.dot(forget_preactivation_grad.T, current_input)
+            w_i_grad = w_i_grad + np.dot(input_preactivation_grad.T, current_input)
+            w_c_grad = w_c_grad + np.dot(cell_preactivation_grad.T, current_input)
+            w_o_grad = w_o_grad + np.dot(output_preactivation_grad.T, current_input)
+
+            u_f_grad = u_f_grad + np.dot(forget_preactivation_grad.T, prev_h)
+            u_i_grad = u_i_grad + np.dot(input_preactivation_grad.T, prev_h)
+            u_c_grad = u_c_grad + np.dot(cell_preactivation_grad.T, prev_h)
+            u_o_grad = u_o_grad + np.dot(output_preactivation_grad.T, prev_h)
             
             b_f_grad = b_f_grad + forget_preactivation_grad
             b_i_grad = b_i_grad + input_preactivation_grad
@@ -194,19 +181,111 @@ class Layer:
             b_o_grad = b_o_grad + output_preactivation_grad
             
         return w_f_grad, w_i_grad, w_c_grad, w_o_grad, u_f_grad, u_i_grad, u_c_grad, u_o_grad, b_f_grad, b_i_grad, b_c_grad, b_o_grad
-            
+    
+    # turns data into batches
+    def create_batches(self, data: npt.NDArray) -> tuple[npt.NDArray]:
+        # the sequence length is one more than the number of timeframes because the sequences will later be divided into x and y
+        sequence_length = self.num_frames + 1
+        # create consequtive sequences from the long list of values 
+        sequences = []
+        for i in range(len(data) - sequence_length):
+            seq = data[i:i+sequence_length]
+            sequences.append(seq)
+        sequences = np.array(sequences)
+
+        # some sequences need to be removed in order for the batches to be the same size
+        num_batches = len(sequences) // self.batch_size
+        sequences = sequences[: num_batches * self.batch_size]
+        
+        # the x values will be the preceeding sequence of values
+        # the y values will be the single value after the preceeding sequence of values 
+        x = sequences[:, :-1]
+        y = sequences[:, -1]
+
+        # reshape the sequences
+        return x.reshape((num_batches, self.batch_size, self.num_frames, self.num_features)), y.reshape((num_batches, self.batch_size, self.num_features))
+    
+    # normalizes data
+    # data shape: (num frames, num features)
+    @staticmethod
+    def min_max_normalization(data: npt.NDArray) -> tuple:
+        # the data may have multiple features, so the min and max values for each column are needed
+        min_vals = data.min(axis=0)
+        max_vals_minus_min = data.max(axis=0) - min_vals
+
+        return (data - min_vals) / max_vals_minus_min, (min_vals, max_vals_minus_min)
+    
+    # inverse normalization
+    # data shape: (num frames, num features)
+    # inverse_parameters: the parameters from the normalization that will be used
+    @staticmethod
+    def inverse_min_max_normalization(data: npt.NDArray, inverse_parameters: tuple[int]) -> npt.NDArray:
+        min_vals, max_vals_minus_min = inverse_parameters
+        return data * max_vals_minus_min + min_vals
+
+    
+    # trains model
+    # implements adam optimizer
+    # data: matrix of shape (timeframes, features) which will be split into batches later
+    def train(self, data: npt.NDArray, learning_rate: float, epochs: int):
+
+        data, inverse_parameters = self.min_max_normalization(data)
+        
+        x, y = self.create_batches(data)
 
 
-# mock dataset
-dataset = {
-    'X': [[i] for i in range(100)],
-    'Y': [[-7.55], [1.7], [0.46], [12.87], [3.23], [9.0], [13.76], [5.5], [8.81], [10.42], [9.54], [15.16], [2.82], [15.1], [9.01], [24.64], [7.73], [10.26], [21.15], [25.27], [22.38], [13.04], [26.19], [16.25], [29.1], [20.3], [28.7], [35.27], [26.09], [35.0], [39.65], [31.43], [37.67], [42.35], [35.52], [32.1], [32.9], [37.37], [36.36], [43.16], [43.46], [36.63], [51.89], [37.38], [47.2], [43.84], [50.8], [53.6], [50.64], [39.8], [48.79], [52.59], [56.62], [56.07], [51.17], [48.43], [62.9], [65.31], [67.9], [60.12], [52.94], [64.39], [60.18], [55.91], [69.97], [62.98], [59.4], [59.85], [76.19], [77.52], [65.18], [78.6], [73.91], [67.58], [77.51], [68.71], [82.41], [79.29], [80.03], [72.38], [75.47], [71.64], [85.3], [87.85], [84.11], [82.8], [90.73], [88.83], [92.51], [91.63], [82.8], [81.69], [89.7], [85.67], [90.61], [99.3], [96.85], [100.66], [107.01], [102.59]]
-}
+        # hyperparameters
+        epsilon = 10 ** -8
+        beta_1 = 0.9
+        beta_2 = 0.999
 
-# num units should correspond to the number of output features on the last layer
-lstm = Layer(num_units=4, input_shape=(10, 1))
-# 1 features in each timeframe
-# 1 units
-# 10 timesteps
-pred = lstm(np.array(dataset['X'][:10]))
-grads = lstm.backward(pred, np.array(dataset['Y'][10]))
+        # starting values
+        # 12 lists correspond to the 12 parameters being optimized
+        m = [np.zeros_like(p) for p in self.params]
+        v = [np.zeros_like(p) for p in self.params]
+
+        for epoch in range(1, epochs + 1):
+            # shuffle data
+            p = np.random.permutation(len(x))
+            x = x[p]
+            y = y[p]
+
+            for batch in range(len(x)):
+                xb = x[batch]
+                yb = y[batch]
+                
+                pred = self(xb)
+
+                lr_t = learning_rate * (np.sqrt(1 - beta_2**epoch) / (1 - beta_1**epoch))
+
+
+                grads = self.backward(pred, yb)
+                for i in range(len(grads)):
+                    m[i] = beta_1 * m[i] + (1 - beta_1) * grads[i]
+                    v[i] = beta_2 * v[i] + (1 - beta_2) * (grads[i] ** 2)
+
+                    m_hat = m[i] / (1 - beta_1**epoch)
+                    v_hat = v[i] / (1 - beta_2**epoch)
+
+                    # update params
+                    self.params[i] = self.params[i] - lr_t * m_hat / (np.sqrt(v_hat) + epsilon)
+
+            print(f'Epoch: {epoch}\nLoss: {self.loss(pred, yb)}')
+
+
+url = 'https://raw.githubusercontent.com/mwitiderrick/stockprice/master/NSE-TATAGLOBAL.csv'
+data = pd.read_csv(url)['Close']
+
+mse = lambda p, a: ((p - a) ** 2).mean()
+
+# num_units: the dimensionality of the output of the lstm
+# num_timeframes: the number of timeframes that the lstm will use to predict the next one
+# num features: the number of features that the lstm is predicting at each timeframe
+# batch_size: the model will process this amount of input-output-pairs at once before updating the gradients
+lstm = LSTM_Layer(num_units=64, num_timeframes=20, num_features=1, batch_size=32, loss=mse)
+lstm.train(data, 0.001, 100)
+
+# need to implement:
+# validation set in training
+# run using gpu instead of cpu with bigger dataset
+# implement a dataloader if needed

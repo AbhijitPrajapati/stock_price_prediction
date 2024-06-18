@@ -1,17 +1,15 @@
 import numpy as np
-import math
+from autograd import grad, elementwise_grad
 
-l = np.array([1, 2, 4])
+# loss_func = lambda p, a: ((p - a) ** 2).mean(0)
+# dloss_func = lambda p, a: 2 / len(p) * (p - a)
+# a1 = np.random.randn(3, 3)
+# a2 = np.random.randn(3, 3)
+# print(dloss_func(a1, a2))
+# print(elementwise_grad(loss_func)(a1, a2))
 
-e = np.array([3, 4, 2])
+l = k = [1, 3,4]
 
-# print(np.random.normal(0, 0.1, (5)))
-
-low = -math.sqrt( 6 / (3 + 3))
-# print(-low)
-
-
-h = [1, 2]
-
-
-print(np.array([[1], [2], [3]]) * np.array([1, 2, 3]))
+print(k)
+l[2] += 2
+print(k)
