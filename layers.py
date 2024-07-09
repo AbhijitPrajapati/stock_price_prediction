@@ -111,11 +111,8 @@ class LSTM_Layer:
         return hidden_state
     
     
-    # pred/actual shape: (batch size, num units)
-    # returns gradient of the output of the layer w.r.t the weights, biases, and input of the layer
-    def backward(self) -> tuple:
-        # find the gradient of the loss function w.r.t its input (the hidden states)
-        # dl_dh = elementwise_grad(self.loss)(pred, actual)      
+    # returns gradient of the loss w.r.t the weights, biases, and input of the layer
+    def backward(self, dl_dh: npt.NDArray) -> tuple:    
 
         tanh_derivative = elementwise_grad(self.tanh)
         sigmoid_derivative = elementwise_grad(self.sigmoid)
@@ -129,32 +126,38 @@ class LSTM_Layer:
         for t in reversed(range(len(self.caches))):
             prev_c, prev_h, i, c, o, new_c, inputs, f_pre, i_pre, c_pre, o_pre = self.caches[t]
             
-            # gradient of the hidden states w.r.t the output gate activations
-            dh_do = self.tanh(new_c)
+            # gradient of the loss w.r.t the output gate activation
+            dl_do = dl_dh * self.tanh(new_c)
 
-            # gradient of the hidden states w.r.t the cell state 
-            dh_dcs = o * tanh_derivative(new_c)
+            # gradient of the loss w.r.t the cell state
+            dl_dcs = dl_dh * tanh_derivative(new_c) * o
 
-            # gradient of the hidden states w.r.t the inputs gate activations
-            dh_di = dh_dcs * c
+            # gradient of the loss w.r.t the forget gate activation
+            dl_df = dl_dh * dl_dcs * prev_c
+
+            # gradient of the loss w.r.t the input gate activation
+            dl_di = dl_dh * dl_dcs * c
+
+            # gradient of the loss w.r.t the cell gate activation
+            dl_dc = dl_dh * dl_dcs * i
+
             
-            # gradient of the hidden states w.r.t the forget gate activations
-            dh_df = dh_dcs * prev_c
-            
-            # gradient of the hidden states w.r.t the cell gate activations
-            dh_dc = dh_dcs * i
-            
-            # gradients w.r.t the preactivations of each gate
+            # gradients of the loss w.r.t the preactivations of each gate
             # shape: (batch size, num units)
-            forget_preactivation_grad = dh_df * sigmoid_derivative(f_pre)# * dl_dh
-            input_preactivation_grad = dh_di * sigmoid_derivative(i_pre)# * dl_dh
-            cell_preactivation_grad = dh_dc * tanh_derivative(c_pre)# * dl_dh
-            output_preactivation_grad = dh_do * sigmoid_derivative(o_pre)# * dl_dh
+            forget_preactivation_grad = dl_df * sigmoid_derivative(f_pre)
+            input_preactivation_grad = dl_di * sigmoid_derivative(i_pre)
+            cell_preactivation_grad = dl_dc * tanh_derivative(c_pre)
+            output_preactivation_grad = dl_do * sigmoid_derivative(o_pre)
 
-            x_t_grad = np.dot(forget_preactivation_grad, self.params[0])
-            + np.dot(input_preactivation_grad, self.params[1])
-            + np.dot(cell_preactivation_grad, self.params[2])
-            + np.dot(output_preactivation_grad, self.params[3])
+            # gradients of the loss w.r.t the input xt in each gate
+            # shape: (num features)
+            dfpre_dxt = np.dot(np.sum(forget_preactivation_grad, axis=0), self.params[0])
+            dipre_dxt = np.dot(np.sum(input_preactivation_grad, axis=0), self.params[1])
+            dcpre_dxt = np.dot(np.sum(cell_preactivation_grad, axis=0), self.params[2])
+            dopre_dxt = np.dot(np.sum(output_preactivation_grad, axis=0), self.params[3])
+
+            # gradient of the loss w.r.t the input xt
+            x_t_grad = dfpre_dxt + dipre_dxt + dcpre_dxt + dopre_dxt
             timestep_grads = timestep_grads + x_t_grad
 
 
@@ -162,7 +165,7 @@ class LSTM_Layer:
             # previous hidden state shape: (batch size, num units)
             current_input = inputs[:, t, :]
 
-            w_f_grad = w_f_grad + np.dot(forget_preactivation_grad.T, current_input)
+            # the gradient of the loss w.r.t each of the weights and biases
             w_i_grad = w_i_grad + np.dot(input_preactivation_grad.T, current_input)
             w_c_grad = w_c_grad + np.dot(cell_preactivation_grad.T, current_input)
             w_o_grad = w_o_grad + np.dot(output_preactivation_grad.T, current_input)
@@ -170,12 +173,13 @@ class LSTM_Layer:
             u_f_grad = u_f_grad + np.dot(forget_preactivation_grad.T, prev_h)
             u_i_grad = u_i_grad + np.dot(input_preactivation_grad.T, prev_h)
             u_c_grad = u_c_grad + np.dot(cell_preactivation_grad.T, prev_h)
-            u_o_grad = u_o_grad + np.dot(output_preactivation_grad.T, prev_h)
-            
-            b_f_grad = b_f_grad + forget_preactivation_grad
-            b_i_grad = b_i_grad + input_preactivation_grad
-            b_c_grad = b_c_grad + cell_preactivation_grad
-            b_o_grad = b_o_grad + output_preactivation_grad
+            u_o_grad = u_o_grad + np.dot(output_preactivation_grad.T, prev_h)    
+
+            # the preactivation grads are flattened across batches giving them shape (num units)
+            b_f_grad = b_f_grad + np.sum(forget_preactivation_grad, axis=0).shape
+            b_i_grad = b_i_grad + np.sum(input_preactivation_grad, axis=0).shape
+            b_c_grad = b_c_grad + np.sum(cell_preactivation_grad, axis=0).shape
+            b_o_grad = b_o_grad + np.sum(output_preactivation_grad, axis=0).shape
         
         return (w_f_grad, w_i_grad, w_c_grad, w_o_grad, u_f_grad, u_i_grad, u_c_grad, u_o_grad, b_f_grad, b_i_grad, b_c_grad, b_o_grad), timestep_grads
 
@@ -195,19 +199,20 @@ class Dense_Layer:
         self.input = None
     
 
-    def __call__(self, inputs: npt.NDArray, training: bool) -> typing.Any:
+    def __call__(self, inputs: npt.NDArray, training: bool = False) -> typing.Any:
         weights, biases = self.params
         self.input = inputs
         self.preactivation = np.dot(inputs, weights.T) + biases 
         return self.activation(self.preactivation)
 
-    # returns the gradient of the output of the layer w.r.t the weights, biases, and input
-    def backward(self):
+    # returns the gradient of the loss w.r.t the weights, biases, and input
+    def backward(self, dl_do: npt.NDArray) -> tuple:
         # gradient of the output of the layer w.r.t the preactivation of the layer
         do_dp = elementwise_grad(self.activation)(self.preactivation)
         
         # gradient of the output of the layer w.r.t the weights, biases, and input
-        wgrad = np.dot(self.input.reshape((-1, 1)), do_dp.reshape((1, -1)))
-        bgrad = do_dp
-        igrad = np.dot(self.params[0].T, do_dp)
+        wgrad = np.dot((do_dp * dl_do).T, self.input)
+        bgrad = np.sum(do_dp * dl_do, axis=0, keepdims=True)
+        igrad = np.dot(do_dp * dl_do, self.params[0])
+
         return (wgrad, bgrad), igrad

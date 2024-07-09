@@ -70,48 +70,62 @@ def train(model: typing.Iterable, x: npt.NDArray, y: npt.NDArray, learning_rate:
     beta_1 = 0.9
     beta_2 = 0.999
 
+    m = [np.zeros_like(p) for l in model for p in l.params]
+    v = [np.zeros_like(p) for l in model for p in l.params]
+    grads = [np.zeros_like(p) for l in model for p in l.params]
 
     for epoch in range(1, epochs + 1):
-
-        lr_t = learning_rate * (np.sqrt(1 - beta_2**epoch) / (1 - beta_1**epoch))
-
         for batch in range(len(x)):
             xb = x[batch]
             yb = y[batch]    
             
-            # foreward pass
+            # forward pass
             pred = xb
             for layer in model:
                 pred = layer(pred, training=True)
 
-            # backward pass
             # gradient of the loss w.r.t the output of the current layer 
             dl_do = elementwise_grad(loss)(pred, yb)
-            for layer in reversed(model):
-                # gradients w.r.t the parameters and the inputs
-                pgrads, igrads = layer.backward()
 
-                # process grads of current layer
-                for i in range(len(pgrads)):
-                    m = np.zeros_like(layer.params[i])
-                    v = np.zeros_like(layer.params[i])
-                    m = beta_1 * m + (1 - beta_1) * pgrads[i]
-                    v = beta_2 * v + (1 - beta_2) * (pgrads[i] ** 2)
+            # backward pass
+            # the index in the grads array that the current paramater corresponds to
+            gind = len(grads) - 1
+            for l in reversed(model):
+                pgrads, igrads = l.backward(dl_do)
+                for g in reversed(pgrads):
+                    grads[gind] = g
+                    gind -= 1
+                dl_do = igrads
+            
 
-                    m_hat = m / (1 - beta_1**epoch)
-                    v_hat = v / (1 - beta_2**epoch)
+            # optimization
+            m_hat = []
+            v_hat = []
+            for i in range(len(grads)):
+                m[i] = beta_1 * m[i] + (1 - beta_1) * grads[i]
+                v[i] = beta_2 * v[i] + (1 - beta_2) * grads[i] ** 2
 
-                    # update params
-                    layer.params[i] = layer.params[i] - lr_t * m_hat / (np.sqrt(v_hat) + epsilon)
-                
-                dl_do = dl_do * igrads
+                m_hat.append(m[i] / (1 - beta_1 ** epoch))
+                v_hat.append(v[i] / (1 - beta_2 ** epoch))
+            
+            # the index in the m_hat and v_hat arrays that the current parameter corresponds to
+            ind = 0
+            for l in model:
+                for i in range(len(l.params)):
+                    l.params[i] = l.params[i] - (learning_rate / (np.sqrt(v_hat[ind]) + epsilon)) * m_hat[ind]
+                    ind += 1
+
+
             
         # validation
-        vpred = x_test[batch]
-        for layer in model:
-            vpred = layer(vpred)
-        l = loss(vpred, y_test[batch])
-        print(f'Epoch: {epoch}\nLoss: {loss}')
+        vlosses = []
+        for vbatch in range(len(x_test)):
+            vpred = x_test[vbatch]
+            for layer in model:
+                vpred = layer(vpred)
+            l = loss(vpred, y_test[vbatch])
+            vlosses.append(l)
+        print(f'Epoch: {epoch}\nLoss: {sum(vlosses) / len(vlosses)}')
     
 
 url = 'https://raw.githubusercontent.com/mwitiderrick/stockprice/master/NSE-TATAGLOBAL.csv'
