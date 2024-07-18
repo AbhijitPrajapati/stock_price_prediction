@@ -64,7 +64,10 @@ def predict(model: typing.Iterable, input: npt.NDArray) -> npt.NDArray:
 # implements adam optimizer
 # batch_size: the model will process this amount of input-output-pairs at once before updating the gradients
 def train(model: typing.Iterable, x: npt.NDArray, y: npt.NDArray, learning_rate: float, epochs: int, loss: typing.Callable, 
-          x_test: npt.NDArray = None, y_test: npt.NDArray = None) -> None:
+          validation_data: tuple = None) -> None:
+    
+    if validation_data: x_test, y_test = validation_data
+
     # hyperparameters
     epsilon = 10 ** -8
     beta_1 = 0.9
@@ -117,15 +120,19 @@ def train(model: typing.Iterable, x: npt.NDArray, y: npt.NDArray, learning_rate:
 
 
             
-        # validation
-        vlosses = []
-        for vbatch in range(len(x_test)):
-            vpred = x_test[vbatch]
-            for layer in model:
-                vpred = layer(vpred)
-            l = loss(vpred, y_test[vbatch])
-            vlosses.append(l)
-        print(f'Epoch: {epoch}\nLoss: {sum(vlosses) / len(vlosses)}')
+        if validation_data:
+            # validation   
+            vlosses = []
+            for vbatch in range(len(x_test)):
+                vpred = x_test[vbatch]
+                for layer in model:
+                    vpred = layer(vpred)
+                l = loss(vpred, y_test[vbatch])
+                vlosses.append(l)
+            print(f'Epoch: {epoch}\nLoss: {sum(vlosses) / len(vlosses)}')
+        else:
+            # training loss
+            print(loss(pred, yb))
     
 
 url = 'https://raw.githubusercontent.com/mwitiderrick/stockprice/master/NSE-TATAGLOBAL.csv'
@@ -155,4 +162,4 @@ x, y = chronological_batching(data, 32, 20)
 split = round(0.8 * x.shape[0])
 x_train, y_train, x_test, y_test = x[:split], y[:split], x[split:], y[split:]
 
-train(model, x_train, y_train, 0.001, 100, loss=mse, x_test=x_test, y_test=y_test)
+train(model, x_train, y_train, 0.001, 100, loss=mse, validation_data=(x_test, y_test))

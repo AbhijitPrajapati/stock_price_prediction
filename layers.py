@@ -176,10 +176,10 @@ class LSTM_Layer:
             u_o_grad = u_o_grad + np.dot(output_preactivation_grad.T, prev_h)    
 
             # the preactivation grads are flattened across batches giving them shape (num units)
-            b_f_grad = b_f_grad + np.sum(forget_preactivation_grad, axis=0).shape
-            b_i_grad = b_i_grad + np.sum(input_preactivation_grad, axis=0).shape
-            b_c_grad = b_c_grad + np.sum(cell_preactivation_grad, axis=0).shape
-            b_o_grad = b_o_grad + np.sum(output_preactivation_grad, axis=0).shape
+            b_f_grad = b_f_grad + np.sum(forget_preactivation_grad, axis=0)
+            b_i_grad = b_i_grad + np.sum(input_preactivation_grad, axis=0)
+            b_c_grad = b_c_grad + np.sum(cell_preactivation_grad, axis=0)
+            b_o_grad = b_o_grad + np.sum(output_preactivation_grad, axis=0)
         
         return (w_f_grad, w_i_grad, w_c_grad, w_o_grad, u_f_grad, u_i_grad, u_c_grad, u_o_grad, b_f_grad, b_i_grad, b_c_grad, b_o_grad), timestep_grads
 
