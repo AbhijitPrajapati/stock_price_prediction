@@ -72,17 +72,18 @@ def create_lstm_layer(num_units, input_shape):
 
         # if this was the last timestep
         if inputs.shape[1] == 1:
-            return hidden_state, [cache]
+            return hidden_state, [cache, [w_f, w_i, w_c, w_o]]
         # if not continue the recursion
         next_timestep_output = lstm_layer(inputs[:, 1:, :], params, previous_hidden_state=hidden_state, previous_cell_state=cell_state)
         out = next_timestep_output[0], [cache] + next_timestep_output[1]
         return out
     
-    def backward(dl_dh, params, cache):
+    def backward(dl_dh, cache):
         tanh_derivative = elementwise_grad(tanh)
         sigmoid_derivative = elementwise_grad(sigmoid)
         
-        caches = [c() for c in cache]
+        params = cache[-1]
+        caches = [c() for c in cache[:-1]]
 
         # all shapes below: (batch_size, num_units)
 
@@ -128,14 +129,14 @@ def create_lstm_layer(num_units, input_shape):
         b_o_grad = np.array(list(map(lambda x: np.sum(x, axis=0), output_preactivation_grad))).sum(0)
 
         # gradients of the loss w.r.t the input xt in each gate for each timeframe
-        # shape: (num features)
-        dfpre_dx = list(map(lambda x: np.dot(np.sum(x, axis=0), params[0]), forget_preactivation_grad))
-        dipre_dx = list(map(lambda x: np.dot(np.sum(x, axis=0), params[1]), input_preactivation_grad))
-        dcpre_dx = list(map(lambda x: np.dot(np.sum(x, axis=0), params[2]), cell_preactivation_grad))
-        dopre_dx = list(map(lambda x: np.dot(np.sum(x, axis=0), params[3]), output_preactivation_grad))
+        # shape: (num_timeframes, num features)
+        dfpre_dx = np.array(list(map(lambda x: np.dot(np.sum(x, axis=0), params[0]), forget_preactivation_grad)))
+        dipre_dx = np.array(list(map(lambda x: np.dot(np.sum(x, axis=0), params[1]), input_preactivation_grad)))
+        dcpre_dx = np.array(list(map(lambda x: np.dot(np.sum(x, axis=0), params[2]), cell_preactivation_grad)))
+        dopre_dx = np.array(list(map(lambda x: np.dot(np.sum(x, axis=0), params[3]), output_preactivation_grad)))
 
-        # gradient of the loss w.r.t the input xt for each timeframe
-        x_grad = list(map(lambda i: dfpre_dx[i] + dipre_dx[i] + dcpre_dx[i] + dopre_dx[i], range(len(caches))))
+        # gradient of the loss w.r.t the input xt summed up across timeframes
+        x_grad = (dfpre_dx + dipre_dx + dcpre_dx + dopre_dx).sum(0)
 
         return (w_f_grad, w_i_grad, w_c_grad, w_o_grad, u_f_grad, u_i_grad, u_c_grad, u_o_grad, b_f_grad, b_i_grad, b_c_grad, b_o_grad), x_grad
 
@@ -149,7 +150,7 @@ def create_dense_layer(num_inputs, num_neurons, activation):
         low = -high
         weights = np.random.uniform(low, high, ((num_neurons, num_inputs)))
         biases = np.random.uniform(low, high, ((num_neurons)))
-        return weights, biases
+        return [weights, biases]
 
     def dense_layer(input, params):
         weights, biases = params

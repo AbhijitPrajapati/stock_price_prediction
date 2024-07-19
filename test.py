@@ -1,2 +1,2 @@
-import numpy as np
-np.ones()
+l = [1, 2, 3]
+print(l[None:])
